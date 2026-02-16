@@ -53,3 +53,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+setup.sh
+run.sh
+CHANGES.md
+SECURITY.md
