@@ -1,56 +1,43 @@
 #!/bin/bash
 
-# Setup Script for AI Storybook Generator
+echo "🔧 Setting up AI Storybook Generator..."
 
-echo "🔧 AI Storybook Generator - Initial Setup"
-echo "=========================================="
-echo ""
-
-# Check if .envrc already exists
-if [ -f .envrc ]; then
-    echo "✅ .envrc file already exists"
-    read -p "Do you want to overwrite it? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "⏭️  Skipping .envrc creation"
-    else
-        cp .envrc.example .envrc
-        echo "📝 Created new .envrc from template"
-    fi
-else
-    cp .envrc.example .envrc
-    echo "📝 Created .envrc from template"
+# Check if Python 3.12 is available
+if ! command -v python3.12 &> /dev/null; then
+    echo "❌ Python 3.12 is required but not found!"
+    exit 1
 fi
 
-echo ""
-echo "⚠️  IMPORTANT: Edit .envrc and add your API keys!"
-echo "   Required: REPLICATE_API_TOKEN"
-echo ""
-read -p "Press Enter to open .envrc in your default editor..."
-${EDITOR:-nano} .envrc
-
-echo ""
-echo "📦 Creating virtual environment..."
+# Create virtual environment
 if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-    echo "✅ Virtual environment created"
+    echo "📦 Creating virtual environment..."
+    python3.12 -m venv .venv
 else
     echo "✅ Virtual environment already exists"
 fi
 
-echo ""
-echo "📦 Installing Python dependencies in virtual environment..."
+# Activate virtual environment
 source .venv/bin/activate
+
+# Upgrade pip
+echo "⬆️ Upgrading pip..."
 pip install --upgrade pip
+
+# Install dependencies
+echo "📥 Installing dependencies..."
 pip install -r requirements.txt
+
+# Check for .envrc
+if [ ! -f ".envrc" ]; then
+    echo "⚠️ .envrc file not found!"
+    echo "Please create .envrc with your API keys:"
+    echo "  export REPLICATE_API_TOKEN=your_token"
+    echo "  export GEMINI_API_KEY=your_key"
+    echo "  export ELEVENLABS_API_KEY=your_key"
+else
+    echo "✅ .envrc file found"
+fi
 
 echo ""
 echo "✅ Setup complete!"
-echo ""
-echo "To start the application:"
-echo "  ./run.sh"
-echo ""
-echo "Or manually:"
-echo "  source .envrc"
-echo "  streamlit run app.py"
-echo ""
+echo "To run the app: ./run.sh"

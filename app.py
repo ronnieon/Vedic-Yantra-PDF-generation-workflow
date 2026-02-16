@@ -14,7 +14,8 @@ from PIL import Image
 from typing import List, Dict, Optional
 import os
 import json
-import google.generativeai as genai
+import google.genai as genai
+from functools import wraps
 
 # ============================================================================
 # CONSTANTS - Model Versions
@@ -48,6 +49,38 @@ COLOR_PALETTE = [
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+def retry_with_backoff(max_retries=3, initial_delay=2):
+    """Decorator to retry API calls with exponential backoff for rate limiting."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_str = str(e)
+                    # Check if it's a rate limit error
+                    if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                        if attempt < max_retries - 1:
+                            st.warning(f"⏳ Rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}...")
+                            time.sleep(delay)
+                            delay *= 2  # Exponential backoff
+                            continue
+                        else:
+                            st.error(
+                                "❌ **Gemini API Rate Limit Exceeded**\n\n"
+                                "Your Gemini API quota has been exhausted. Please:\n"
+                                "1. Wait a few minutes and try again\n"
+                                "2. Check your quota at: https://aistudio.google.com/app/apikey\n"
+                                "3. Consider upgrading your API plan if needed\n"
+                                "4. Reduce the number of scenes to process at once"
+                            )
+                    raise  # Re-raise the exception if not rate limit or max retries reached
+            return None
+        return wrapper
+    return decorator
 
 def initialize_session_state():
     """Initialize all session state variables."""
@@ -104,9 +137,9 @@ def analyze_scenes_with_gemini(scenes: List[str], api_key: str) -> Optional[Dict
     Returns:
         Dictionary with characters, artifacts, and environments or None if failed
     """
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+    @retry_with_backoff(max_retries=3, initial_delay=3)
+    def _analyze():
+        client = genai.Client(api_key=api_key)
         
         scenes_text = "\n\n".join([f"Scene {i+1}: {scene}" for i, scene in enumerate(scenes) if scene.strip()])
         
@@ -133,9 +166,15 @@ Return your response in the following JSON format:
 
 Be specific and include visual details that would help an illustrator."""
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='models/gemini-2.0-flash',
+            contents=prompt
+        )
         
         # Extract JSON from response
+        if not response or not response.text:
+            raise ValueError("Empty response from Gemini API")
+            
         response_text = response.text.strip()
         
         # Remove markdown code blocks if present
@@ -150,7 +189,9 @@ Be specific and include visual details that would help an illustrator."""
         # Parse JSON
         result = json.loads(response_text)
         return result
-        
+    
+    try:
+        return _analyze()
     except Exception as e:
         st.error(f"Failed to analyze scenes with Gemini: {str(e)}")
         return None
@@ -173,9 +214,9 @@ def generate_sketch_prompt_with_gemini(scene: str, characters: List[str], artifa
     Returns:
         Detailed sketch prompt or None if failed
     """
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+    @retry_with_backoff(max_retries=3, initial_delay=3)
+    def _generate():
+        client = genai.Client(api_key=api_key)
         
         # Build character list with colors
         characters_with_colors = []
@@ -193,7 +234,7 @@ def generate_sketch_prompt_with_gemini(scene: str, characters: List[str], artifa
                 artifacts_with_colors.append(f"- {artifact} [COLOR: {color}]")
         artifacts_list = "\n".join(artifacts_with_colors) if artifacts_with_colors else "No artifacts"
         
-        prompt = f"""You are a storybook illustrator planning a COLOR-CODED sketch. Analyze this scene and create a detailed sketch prompt that follows a strict template.
+        prompt = f"""You are a storybook illustrator creating a SIMPLE COLOR-CODED sketch. Analyze this scene and create a sketch prompt.
 
 SCENE DESCRIPTION:
 {scene}
@@ -204,56 +245,55 @@ AVAILABLE CHARACTERS (with assigned colors):
 AVAILABLE ARTIFACTS (with assigned colors):
 {artifacts_list}
 
-TASK: Create a sketch prompt following this EXACT structure. Your prompt MUST start with:
+TASK: Create a simple sketch prompt following these rules:
 
-"Draw a SIMPLE 2-D color-coded sketch. Use SOLID COLORS to fill each character and artifact as specified. Clean white background."
+START YOUR PROMPT WITH:
+"Draw a VERY SIMPLE stick figure sketch. Use SOLID BRIGHT COLORS to fill each character and artifact as specified below. ABSOLUTELY NO TEXT, NO LABELS, NO NAME TAGS, NO TEXT BOXES. Clean white background."
 
-Then include these sections:
+THEN SPECIFY:
 
-1. CHARACTER REQUIREMENTS:
-   - Identify which characters appear in this specific scene (use only those mentioned)
-   - For EACH character, you MUST write:
-     * Their stick figure position/action (e.g., "Draw [NAME] standing", "Draw [NAME] kneeling", "Draw [NAME] running")
-     * COLOR SPECIFICATION: "Fill [NAME] entirely with SOLID [COLOR]" using the EXACT color assigned to that character
-     * Any specific gestures or interactions
-     * MANDATORY: "Draw [NAME]'s name tag ABOVE their head, labeled: '[NAME] [EMOTION]'"
-   - Example: "Draw SID kneeling. Fill SID entirely with SOLID BRIGHT RED. Draw SID's name tag ABOVE his head, labeled: 'SID [ANXIOUS]'"
-   - EVERY character MUST have their emotion specified (e.g., HAPPY, SAD, CURIOUS, ANXIOUS, DELIGHTED, WISE, SERIOUS, ANGRY, SURPRISED)
+1. CHARACTER PLACEMENT:
+   - For each character in this scene, write:
+     * Position and pose (e.g., "Draw a stick figure standing on the left")
+     * Emotion/gesture (e.g., "arms raised in joy", "kneeling down", "pointing forward")
+     * COLOR: "Fill this entire stick figure with SOLID [COLOR]" using their exact assigned color
+   - Example: "Draw a simple stick figure standing on the left side, arms outstretched. Fill this entire stick figure with SOLID BRIGHT RED."
 
-2. ARTIFACT REQUIREMENTS (if any appear in this scene):
-   - Identify which artifacts/objects appear in this scene
-   - For EACH artifact, you MUST write:
-     * Its position and representation
-     * COLOR SPECIFICATION: "Fill [ARTIFACT] entirely with SOLID [COLOR]" using the EXACT color assigned to that artifact
-   - Example: "Draw the MAGIC WAND in her hand. Fill MAGIC WAND entirely with SOLID BRIGHT BLUE."
+2. ARTIFACT PLACEMENT (if any):
+   - For each artifact in this scene, write:
+     * Simple representation (e.g., "Draw a simple wand shape", "Draw a circular crown")
+     * Position (e.g., "held in the right figure's hand", "floating above the center")
+     * COLOR: "Fill this object entirely with SOLID [COLOR]" using its exact assigned color
+   - Example: "Draw a simple stick/wand shape in the figure's hand. Fill this wand entirely with SOLID BRIGHT BLUE."
 
-3. ENVIRONMENT/BACKGROUND REQUIREMENTS:
-   - YOU MUST ALWAYS write: "In the TOP RIGHT CORNER of the sketch, place a RECTANGULAR TEXT BOX. Inside the box, write: '[SCENE LOCATION/ENVIRONMENT]'"
-   - Use the actual scene setting (e.g., "FOREST", "CASTLE", "OCEAN", "BEDROOM", "PARK", "CITY STREET")
-   - If location is unclear, use "UNSPECIFIED LOCATION"
-   - This is MANDATORY - never skip this element
-   - Background should be simple line art or white
+3. BACKGROUND:
+   - Keep background MINIMAL - just a few simple lines if needed (horizon line, simple ground)
+   - Or leave it completely white
+   - NO detailed environment elements
 
-4. STYLE REQUIREMENTS:
-   - Use SOLID, BRIGHT colors to fill characters and artifacts as specified
-   - Each character/artifact should be filled with ONE solid color (their assigned color)
-   - Very simple 2-D stick figures - kindergarten level simplicity
-   - Clean white background
-   - Minimal detail - the colors are for identification purposes
-
-CRITICAL REMINDERS:
-- Name tags MUST appear for EVERY character
-- Each character/artifact MUST be filled with their assigned SOLID color
-- Scene location MUST appear in top right corner
-- Use EXACT colors as specified (BRIGHT RED, BRIGHT BLUE, etc.)
-- Colors are for IDENTIFICATION - they help us match sketch elements to final assets
-- Follow the format exactly as shown above
+CRITICAL RULES:
+- ABSOLUTELY NO TEXT of any kind (no names, no labels, no boxes)
+- Each character = simple stick figure filled with ONE solid bright color
+- Each artifact = simple shape filled with ONE solid bright color
+- Colors are for identification in later stages
+- Maximum simplicity - kindergarten-level stick figures
+- Use EXACT colors specified (BRIGHT RED, BRIGHT BLUE, BRIGHT GREEN, etc.)
+- Clean white background
 
 Return ONLY the complete sketch prompt text, nothing else."""
 
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        response = client.models.generate_content(
+            model='models/gemini-2.0-flash',
+            contents=prompt
+        )
         
+        if not response or not response.text:
+            raise ValueError("Empty response from Gemini API")
+            
+        return response.text.strip()
+    
+    try:
+        return _generate()
     except Exception as e:
         st.error(f"Failed to generate sketch prompt: {str(e)}")
         return None
@@ -581,10 +621,10 @@ def render_phase2_draft_generation():
     st.header("✏️ Phase 2: Draft Sketches")
     
     st.info(
-        "📐 **About Draft Sketches:** These will be simple black & white line drawings "
-        "showing basic positioning. Stick figures for characters with name tags and emotions "
-        "(e.g., 'LUNA [CURIOUS]'), and text boxes indicating backgrounds (e.g., 'FOREST', 'NIGHT SKY'). "
-        "Colors and details will be added in Phase 4."
+        "🎨 **About Draft Sketches:** These will be SIMPLE COLOR-CODED stick figure sketches. "
+        "Each character and artifact is filled with a unique BRIGHT color for identification. "
+        "NO text, NO labels, NO name tags - just colored stick figures showing positions and poses. "
+        "In Phase 4, the AI uses these colors to match each stick figure/object to the correct detailed asset."
     )
     
     if not st.session_state.api_token:
@@ -647,7 +687,7 @@ def render_phase2_draft_generation():
                             'scene_idx': idx,
                             'prompt': draft_prompt  # Store the prompt for reference
                         })
-                    time.sleep(2)  # Rate limiting (increased for two API calls)
+                    time.sleep(5)  # Rate limiting - increased to avoid quota exhaustion
             
             progress_bar.progress((idx + 1) / len(st.session_state.scenes))
         
@@ -823,11 +863,11 @@ def render_phase4_final_composition():
     st.header("✨ Phase 4: Final Scene Rendering")
     
     st.info(
-        "🎨 **About Final Rendering:** This phase transforms your draft sketches into full-color illustrations. "
-        "The AI will replace stick figures with the actual character designs from Phase 3, "
-        "replace text labels with real objects from your artifact turnarounds, "
-        "and add detailed backgrounds based on your environment assets. "
-        "All name tags and labels will be removed automatically."
+        "✨ **About Final Rendering:** This phase uses COLOR IDENTIFICATION to transform your sketches. "
+        "The AI identifies each colored stick figure/object in the draft sketch and replaces it with "
+        "the matching detailed asset from Phase 3. For example: a BRIGHT RED stick figure becomes the "
+        "full character design for that character, a BRIGHT BLUE object becomes the detailed artifact. "
+        "The composition and poses are preserved, but stick figures become beautiful illustrations."
     )
     
     if not st.session_state.api_token:
@@ -916,22 +956,21 @@ def render_phase4_final_composition():
             color_map_text = "\\n".join(color_mappings) if color_mappings else "No color mappings"
             
             refinement_prompt = (
-                f"Transform this COLOR-CODED sketch into a beautiful, detailed, full-color children's storybook illustration.\\n\\n"
+                f"Transform this COLOR-CODED stick figure sketch into a beautiful, detailed, full-color children's storybook illustration.\\n\\n"
                 f"SCENE: {scene_text}\\n\\n"
                 f"COLOR-TO-ASSET MAPPING (use this to identify which sketch element matches which asset):\\n{color_map_text}\\n\\n"
                 f"AVAILABLE ASSETS TO USE:\\n{asset_list}\\n\\n"
                 f"INSTRUCTIONS:\\n"
                 f"1. The sketch uses SOLID COLORS to identify different characters and objects\\n"
                 f"2. Use the color mapping above to match each colored element to its corresponding asset\\n"
-                f"3. Replace each colored figure/object with the detailed asset that matches its color\\n"
-                f"4. Keep the exact same composition and layout as the sketch\\n"
-                f"5. Maintain character positions, poses, and emotions from the sketch\\n"
-                f"6. The colored sketch shows placement and identification - the assets show actual appearance\\n"
-                f"7. Remove all name tags, text labels, and text boxes from the sketch\\n"
-                f"8. Create a fully rendered, professional children's book illustration\\n"
-                f"9. Use warm colors, soft lighting, clean style suitable for ages 5-10\\n"
-                f"10. Keep background and environment consistent with the provided environment asset\\n\\n"
-                f"CRITICAL: Use the color coding to correctly identify which asset to use for each element!"
+                f"3. Replace each colored stick figure/object with the detailed asset that matches its color\\n"
+                f"4. Keep the exact same composition, layout, and positions as the sketch\\n"
+                f"5. Maintain character poses and gestures from the sketch\\n"
+                f"6. The colored sketch shows WHAT goes WHERE - the assets show HOW they should look\\n"
+                f"7. Create a fully rendered, professional children's book illustration\\n"
+                f"8. Use warm colors, soft lighting, clean style suitable for ages 5-10\\n"
+                f"9. Add an appropriate background matching the environment asset provided\\n\\n"
+                f"CRITICAL: Match colors EXACTLY - BRIGHT RED figure → use the asset labeled as BRIGHT RED!"
             )
             
             with st.spinner(f"Creating scene {idx + 1}..."):
