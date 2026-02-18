@@ -381,13 +381,10 @@ def generate_image(prompt: str, gemini_api_key: str, reference_images: Optional[
     Args:
         prompt: Text prompt for image generation
         gemini_api_key: Google Gemini/Imagen API key
-        reference_images: Optional list of file paths to reference images (for future use)
+        reference_images: Optional list of file paths to reference images for consistency
         
     Returns:
         Path to generated image or None if failed
-        
-    Note: Reference images are currently integrated via detailed prompts.
-    Google Imagen 4.0 uses sophisticated prompt understanding to maintain consistency.
     """
     try:
         from google.genai import types
@@ -400,14 +397,29 @@ def generate_image(prompt: str, gemini_api_key: str, reference_images: Optional[
             aspect_ratio="1:1"
         )
         
-        # Note: Google Imagen 4.0 excels at maintaining consistency through detailed prompts
-        # Reference images are encoded in the detailed character descriptions in the prompt
+        # If reference images provided, read them as bytes
+        reference_image_bytes = None
+        if reference_images and len(reference_images) > 0:
+            # Read the first reference image (Imagen supports reference images)
+            ref_path = reference_images[0]
+            if os.path.exists(ref_path):
+                with open(ref_path, 'rb') as f:
+                    reference_image_bytes = f.read()
         
-        response = client.models.generate_images(
-            model=IMAGEN_MODEL,
-            prompt=prompt,
-            config=config
-        )
+        # Generate image with or without reference
+        if reference_image_bytes:
+            response = client.models.generate_images(
+                model=IMAGEN_MODEL,
+                prompt=prompt,
+                config=config,
+                reference_images=[types.Image(image_bytes=reference_image_bytes)]
+            )
+        else:
+            response = client.models.generate_images(
+                model=IMAGEN_MODEL,
+                prompt=prompt,
+                config=config
+            )
         
         # Save image to temporary file and return path
         if response and hasattr(response, 'generated_images') and response.generated_images:
@@ -682,342 +694,433 @@ def render_phase1_inputs():
             st.rerun()
 
 
-
-
 def render_phase2_character_design():
-    """Phase 2: Character Design Generation - Create detailed character reference images."""
-    st.header("🎭 Phase 2: Character Design")
+    """Phase 2: Draft Generation - Create stick figure sketches."""
+    st.header("✏️ Phase 2: Draft Sketches")
     
     st.info(
-        "✨ **Character-First Approach:** Generate detailed character designs FIRST. "
-        "These will be used as visual references when generating scenes to ensure consistency!"
+        "🎨 **About Draft Sketches:** These will be SIMPLE COLOR-CODED stick figure sketches. "
+        "Each character and artifact is filled with a unique BRIGHT color for identification. "
+        "NO text, NO labels, NO name tags - just colored stick figures showing positions and poses. "
+        "In Phase 4, the AI uses these colors to match each stick figure/object to the correct detailed asset."
     )
     
-    if not st.session_state.gemini_api_key:
-        st.error("⚠️ GEMINI_API_KEY not found! Please set it in your .envrc file.")
+    if not st.session_state.api_token:
+        st.error("⚠️ REPLICATE_API_TOKEN not found! Please set it in your .envrc file and restart the app.")
+        st.info("💡 Run: `source .envrc` or use `./run.sh` to load environment variables.")
         return
-    
-    if not st.session_state.scenes_analyzed:
-        st.warning("⚠️ Please complete Phase 1 (Story Analysis) first.")
-        return
-    
-    if not st.session_state.characters or not any(c.strip() for c in st.session_state.characters):
-        st.warning("⚠️ No characters defined. Add characters in Phase 1.")
-        return
-    
-    # Show editable character descriptions before generating
-    if not st.session_state.character_designs:
-        st.subheader("Review & Edit Character Descriptions")
-        st.info("✏️ Review and refine character descriptions before generating designs. Add specific visual details like hair color, clothing, height, etc.")
-        
-        for i, char_desc in enumerate(st.session_state.characters):
-            if char_desc and char_desc.strip():
-                char_name = char_desc.split(':')[0] if ':' in char_desc else f"Character {i + 1}"
-                st.session_state.characters[i] = st.text_area(
-                    f"🎭 {char_name}",
-                    value=char_desc,
-                    height=120,
-                    key=f"edit_char_desc_{i}",
-                    help="Add specific visual details: appearance, clothing, colors, height, age, distinctive features"
-                )
-        
-        st.markdown("---")
-    
-    # Generate Character Designs Button
-    if not st.session_state.characters_approved:
-        if st.button("🎨 Generate Character Designs", type="primary", use_container_width=True):
-            st.session_state.character_designs = {}
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            valid_chars = [(i, char) for i, char in enumerate(st.session_state.characters) if char.strip()]
-            
-            for idx, (char_idx, char_desc) in enumerate(valid_chars):
-                status_text.text(f"Designing character {idx + 1}/{len(valid_chars)}...")
-                
-                # Create detailed character design prompt with turnaround views
-                prompt = (
-                    f"Professional character design turnaround sheet. Show THREE views of the SAME character: "
-                    f"front view, 3/4 view, and side profile view. "
-                    f"Character description: {char_desc}. "
-                    f"High quality character concept art, detailed illustration style. "
-                    f"The character should be in a neutral standing pose, clearly showing their full body, "
-                    f"face, clothing, and distinctive features from multiple angles. "
-                    f"Clean white background. Consistent design across all three views. "
-                    f"Professional animation/game character reference sheet style."
-                )
-                
-                with st.spinner(f"Creating design for character {idx + 1}..."):
-                    image_path = generate_image(prompt, st.session_state.gemini_api_key)
-                    
-                    if image_path:
-                        image_bytes = download_image(image_path)
-                        if image_bytes:
-                            st.session_state.character_designs[char_idx] = {
-                                'description': char_desc,
-                                'path': image_path,
-                                'bytes': image_bytes,
-                                'prompt': prompt
-                            }
-                        time.sleep(3)  # Rate limiting
-                
-                progress_bar.progress((idx + 1) / len(valid_chars))
-            
-            status_text.text("✅ Character designs complete!")
-            st.success(f"Generated {len(st.session_state.character_designs)} character designs!")
-            st.rerun()
-    
-    # Display and approve character designs
-    if st.session_state.character_designs:
-        st.subheader("Character Design Gallery")
-        st.info("👀 Review your character designs. Edit descriptions and regenerate if needed.")
-        
-        for char_idx, design in st.session_state.character_designs.items():
-            char_name = design['description'].split(':')[0] if ':' in design['description'] else f"Character {char_idx + 1}"
-            
-            with st.expander(f"🎭 {char_name}", expanded=True):
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    st.image(design['bytes'], use_column_width=True, caption=char_name)
-                
-                with col2:
-                    st.caption("**Character Description (Editable):**")
-                    
-                    # Editable character description
-                    edited_desc = st.text_area(
-                        "Edit character description",
-                        value=design['description'],
-                        height=150,
-                        key=f"edit_design_desc_{char_idx}",
-                        label_visibility="collapsed",
-                        help="Edit and click Regenerate to update the design"
-                    )
-                    
-                    # Update description in session state if changed
-                    if edited_desc != design['description']:
-                        st.session_state.character_designs[char_idx]['description'] = edited_desc
-                        st.session_state.characters[char_idx] = edited_desc
-                    
-                    # Option to regenerate with edited description
-                    if st.button(f"🔄 Regenerate with Updated Description", key=f"regen_char_{char_idx}"):
-                        with st.spinner(f"Regenerating {char_name}..."):
-                            # Use the edited description
-                            new_prompt = (
-                                f"Professional character design turnaround sheet. Show THREE views of the SAME character: "
-                                f"front view, 3/4 view, and side profile view. "
-                                f"Character description: {edited_desc}. "
-                                f"High quality character concept art, detailed illustration style. "
-                                f"The character should be in a neutral standing pose, clearly showing their full body, "
-                                f"face, clothing, and distinctive features from multiple angles. "
-                                f"Clean white background. Consistent design across all three views. "
-                                f"Professional animation/game character reference sheet style."
-                            )
-                            
-                            new_image_path = generate_image(new_prompt, st.session_state.gemini_api_key)
-                            
-                            if new_image_path:
-                                new_image_bytes = download_image(new_image_path)
-                                if new_image_bytes:
-                                    st.session_state.character_designs[char_idx]['path'] = new_image_path
-                                    st.session_state.character_designs[char_idx]['bytes'] = new_image_bytes
-                                    st.session_state.character_designs[char_idx]['description'] = edited_desc
-                                    st.session_state.character_designs[char_idx]['prompt'] = new_prompt
-                                    st.session_state.characters[char_idx] = edited_desc
-                                    st.success("✅ Regenerated!")
-                                    st.rerun()
-        
-        # Approve designs
-        if not st.session_state.characters_approved:
-            st.markdown("---")
-            if st.button("✅ Approve Character Designs & Continue", type="primary", use_container_width=True):
-                st.session_state.characters_approved = True
-                st.success("✅ Character designs approved! Proceed to Phase 3 to generate scenes.")
-                st.rerun()
-    
-    if st.session_state.characters_approved:
-        st.markdown("---")
-        st.success("✅ Phase 2 Complete! Your character designs are ready. Proceed to Phase 3 to generate scenes.")
-
-
-def render_phase3_scene_generation():
-    """Phase 3: Scene Generation with Character References."""
-    st.header("🎬 Phase 3: Scene Generation")
-    
-    st.info(
-        "🎨 **Character-Consistent Scenes:** Generate scenes using your approved character designs as references. "
-        "This ensures characters look the same across all scenes!"
-    )
     
     if not st.session_state.gemini_api_key:
-        st.error("⚠️ GEMINI_API_KEY not found!")
+        st.error("⚠️ GEMINI_API_KEY not found! Please set it in your .envrc file and restart the app.")
+        st.info("💡 Run: `source .envrc` or use `./run.sh` to load environment variables.")
         return
     
-    if not st.session_state.characters_approved:
-        st.warning("⚠️ Please complete Phase 2 (Character Design) and approve your designs first.")
+    if not st.session_state.story_title or not any(st.session_state.scenes):
+        st.warning("⚠️ Please complete Phase 1 first.")
         return
     
-    if not st.session_state.character_designs:
-        st.warning("⚠️ No character designs available. Go back to Phase 2.")
+    if not st.session_state.assets_confirmed:
+        st.warning("⚠️ Please analyze your scenes with AI and confirm assets in Phase 1 before proceeding.")
         return
     
-    # Generate Scenes Button
-    if not st.session_state.scene_images:
-        if st.button("🎬 Generate All Scenes", type="primary", use_container_width=True):
-            st.session_state.scene_images = []
+    if st.button("🎨 Generate Draft Sketches", type="primary"):
+        st.session_state.draft_images = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, scene in enumerate(st.session_state.scenes):
+            if not scene.strip():
+                continue
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            status_text.text(f"Analyzing scene {idx + 1}/{len(st.session_state.scenes)}...")
             
-            for scene_idx, scene_desc in enumerate(st.session_state.scenes):
-                if not scene_desc.strip():
+            # Use Gemini to generate precise sketch prompt based on scene and characters
+            with st.spinner(f"Analyzing scene {idx + 1} with AI..."):
+                draft_prompt = generate_sketch_prompt_with_gemini(
+                    scene, 
+                    st.session_state.characters,
+                    st.session_state.artifacts,
+                    st.session_state.character_colors,
+                    st.session_state.artifact_colors,
+                    st.session_state.gemini_api_key
+                )
+                
+                if not draft_prompt:
+                    st.warning(f"⚠️ Could not generate prompt for scene {idx + 1}. Skipping...")
                     continue
-                
-                status_text.text(f"Generating scene {scene_idx + 1}/{len(st.session_state.scenes)}...")
-                
-                # Get which characters are in this scene
-                char_indices = st.session_state.scene_character_mapping.get(scene_idx, [])
-                
-                # Gather character reference images and descriptions
-                reference_images = []
-                character_descriptions = []
-                character_names = []
-                for char_idx in char_indices:
-                    if char_idx in st.session_state.character_designs:
-                        ref_path = st.session_state.character_designs[char_idx]['path']
-                        reference_images.append(ref_path)
-                        char_desc = st.session_state.character_designs[char_idx]['description']
-                        char_name = char_desc.split(':')[0] if ':' in char_desc else f"Character {char_idx+1}"
-                        character_names.append(char_name)
-                        character_descriptions.append(char_desc)
-                
-                # Build detailed scene prompt with full character descriptions
-                chars_in_scene = ", ".join(character_names) if character_names else "the characters"
-                environment = st.session_state.environments[0] if st.session_state.environments and st.session_state.environments[0].strip() else "appropriate setting"
-                
-                # Include FULL character descriptions for consistency
-                char_details = "\n".join([f"- {desc}" for desc in character_descriptions]) if character_descriptions else ""
-                
-                prompt = (
-                    f"Professional storybook illustration in warm, colorful children's book style.\n\n"
-                    f"SCENE: {scene_desc}\n\n"
-                    f"SETTING: {environment}\n\n"
-                    f"CHARACTERS IN THIS SCENE (maintain EXACT appearance):\n{char_details}\n\n"
-                    f"IMPORTANT: Draw these EXACT characters with their specific features, clothing, and appearance as described. "
-                    f"Show them clearly engaging in the scene action. Professional children's book illustration quality. "
-                    f"Consistent character designs matching the descriptions exactly."
-                )
-                
-                with st.spinner(f"Creating scene {scene_idx + 1} with character references..."):
-                    # Generate scene with character references
-                    image_path = generate_image(
-                        prompt, 
-                        st.session_state.gemini_api_key,
-                        reference_images=reference_images if reference_images else None
-                    )
-                    
-                    if image_path:
-                        image_bytes = download_image(image_path)
-                        if image_bytes:
-                            st.session_state.scene_images.append({
-                                'scene_idx': scene_idx,
-                                'path': image_path,
-                                'bytes': image_bytes,
-                                'scene_description': scene_desc,
-                                'characters': character_names,
-                                'prompt': prompt
-                            })
-                        time.sleep(4)  # Rate limiting
-                
-                progress_bar.progress((scene_idx + 1) / len(st.session_state.scenes))
             
-            status_text.text("✅ All scenes generated!")
-            st.success(f"Generated {len(st.session_state.scene_images)} scenes!")
-            st.rerun()
-    
-    # Display generated scenes
-    if st.session_state.scene_images:
-        st.subheader("Story Scenes")
+            status_text.text(f"Generating sketch for scene {idx + 1}/{len(st.session_state.scenes)}...")
+            
+            with st.spinner(f"Creating sketch for scene {idx + 1}..."):
+                image_url = generate_image(draft_prompt, st.session_state.gemini_api_key)
+                
+                if image_url:
+                    # Download and store image
+                    image_bytes = download_image(image_url)
+                    if image_bytes:
+                        st.session_state.draft_images.append({
+                            'url': image_url,
+                            'bytes': image_bytes,
+                            'scene_idx': idx,
+                            'prompt': draft_prompt  # Store the prompt for reference
+                        })
+                    time.sleep(5)  # Rate limiting - increased to avoid quota exhaustion
+            
+            progress_bar.progress((idx + 1) / len(st.session_state.scenes))
         
-        for idx, scene_data in enumerate(st.session_state.scene_images):
-            scene_idx = scene_data['scene_idx']
+        status_text.text("✅ Draft sketches complete!")
+        st.success(f"Generated {len(st.session_state.draft_images)} draft sketches!")
+    
+    # Display draft images
+    if st.session_state.draft_images:
+        st.subheader("Draft Sketches Preview")
+        st.info("💡 You can edit the AI-generated prompts and regenerate individual scenes if needed.")
+        
+        for idx, draft in enumerate(st.session_state.draft_images):
+            scene_idx = draft['scene_idx']
             
             st.markdown(f"### Scene {scene_idx + 1}")
             
             col1, col2 = st.columns([1, 1])
             
             with col1:
-                st.image(scene_data['bytes'], use_column_width=True)
+                st.image(draft['bytes'], use_column_width=True)
             
             with col2:
-                st.caption("**Scene Description:**")
-                st.write(scene_data['scene_description'])
+                st.caption(f"**Scene Description:**")
+                scene_text = st.session_state.scenes[scene_idx]
+                if len(scene_text) > 200:
+                    st.text(scene_text[:200] + "...")
+                else:
+                    st.text(scene_text)
                 
-                st.caption("**Characters:**")
-                st.write(", ".join(scene_data['characters']) if scene_data['characters'] else "No characters")
-                
-                # Option to regenerate this scene
-                if st.button(f"🔄 Regenerate Scene {scene_idx + 1}", key=f"regen_scene_{idx}"):
-                    with st.spinner(f"Regenerating scene {scene_idx + 1}..."):
-                        # Get character references again
-                        char_indices = st.session_state.scene_character_mapping.get(scene_idx, [])
-                        ref_images = [st.session_state.character_designs[ci]['path'] for ci in char_indices if ci in st.session_state.character_designs]
+                # Editable prompt
+                if 'prompt' in draft:
+                    st.caption("**AI-Generated Sketch Prompt (Editable):**")
+                    edited_prompt = st.text_area(
+                        "Edit prompt if needed",
+                        value=draft['prompt'],
+                        height=150,
+                        key=f"prompt_edit_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Regenerate button
+                    if st.button(f"🔄 Regenerate Scene {scene_idx + 1}", key=f"regen_{idx}", type="secondary"):
+                        api_token = st.session_state.api_token
+                        if not api_token:
+                            st.error("API token not found!")
+                            return
                         
-                        new_image_path = generate_image(
-                            scene_data['prompt'],
-                            st.session_state.gemini_api_key,
-                            reference_images=ref_images if ref_images else None
-                        )
+                        if not edited_prompt or not edited_prompt.strip():
+                            st.error("Prompt cannot be empty!")
+                            return
                         
-                        if new_image_path:
-                            new_image_bytes = download_image(new_image_path)
-                            if new_image_bytes:
-                                st.session_state.scene_images[idx]['path'] = new_image_path
-                                st.session_state.scene_images[idx]['bytes'] = new_image_bytes
-                                st.success("✅ Regenerated!")
-                                st.rerun()
+                        with st.spinner(f"Regenerating scene {scene_idx + 1}..."):
+                            # Use the edited prompt
+                            new_image_url = generate_image(edited_prompt, st.session_state.gemini_api_key)
+                            
+                            if new_image_url:
+                                new_image_bytes = download_image(new_image_url)
+                                if new_image_bytes:
+                                    # Update the draft image
+                                    st.session_state.draft_images[idx]['url'] = new_image_url
+                                    st.session_state.draft_images[idx]['bytes'] = new_image_bytes
+                                    st.session_state.draft_images[idx]['prompt'] = edited_prompt
+                                    st.success(f"✅ Scene {scene_idx + 1} regenerated!")
+                                    st.rerun()
+                            else:
+                                st.error(f"Failed to regenerate scene {scene_idx + 1}")
             
-            if idx < len(st.session_state.scene_images) - 1:
+            if idx < len(st.session_state.draft_images) - 1:
                 st.markdown("---")
-        
-        st.markdown("---")
-        st.success("✅ Phase 3 Complete! All scenes generated. Proceed to Phase 4 to create your PDF.")
 
 
-
-def render_phase4_pdf_export():
-    """Phase 4: PDF Export - Create downloadable storybook."""
-    st.header("📚 Phase 4: PDF Storybook")
+def render_phase3_asset_design():
+    """Phase 3: Asset Design - Generate high-quality asset references."""
+    st.header("🎨 Phase 3: Asset Design")
     
-    if not st.session_state.scene_images:
-        st.warning("⚠️ Please generate scenes first (Phase 3).")
+    st.info(
+        "🎭 **About Asset Design:** Generate detailed reference sheets for characters and artifacts. "
+        "Characters and artifacts will be shown as 3-way turnaround views (front, side, back) "
+        "for consistent reference across your storybook scenes."
+    )
+    
+    if not st.session_state.api_token:
+        st.error("⚠️ REPLICATE_API_TOKEN not found! Please set it in your .envrc file and restart the app.")
+        st.info("💡 Run: `source .envrc` or use `./run.sh` to load environment variables.")
+        return
+    
+    # Collect all assets
+    all_assets = []
+    for char in st.session_state.characters:
+        if char.strip():
+            all_assets.append(('character', char))
+    for artifact in st.session_state.artifacts:
+        if artifact.strip():
+            all_assets.append(('artifact', artifact))
+    for env in st.session_state.environments:
+        if env.strip():
+            all_assets.append(('environment', env))
+    
+    if not all_assets:
+        st.info("No assets defined. Add characters, artifacts, or environments in Phase 1.")
+        return
+    
+    if st.button("🖼️ Design Assets", type="primary"):
+        st.session_state.asset_designs = {}
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, (asset_type, asset_desc) in enumerate(all_assets):
+            status_text.text(f"Designing {asset_type}: {asset_desc[:30]}...")
+            
+            # Create detailed prompt based on asset type
+            if asset_type == 'character':
+                prompt = (
+                    f"Professional character turnaround sheet showing THREE views of the same character: "
+                    f"front view, side view, and back view. High quality character design, detailed concept art style. "
+                    f"Character description: {asset_desc}. "
+                    f"Show the character standing in neutral pose from all three angles side by side. "
+                    f"Clean neutral background (white or light gray), no environment elements. "
+                    f"Consistent design across all three views. Professional animation reference style."
+                )
+            elif asset_type == 'artifact':
+                prompt = (
+                    f"Professional object turnaround sheet showing THREE views of the same item: "
+                    f"front view, side view, and back/rear view. High quality product design, detailed technical illustration. "
+                    f"Object description: {asset_desc}. "
+                    f"Show the object clearly from all three angles side by side. "
+                    f"Clean neutral background (white or light gray), no other elements. "
+                    f"Consistent design across all three views. Professional technical illustration / product design style."
+                )
+            else:  # environment
+                prompt = f"Detailed environment design, high quality realistic setting, professional looks. Environment: {asset_desc}"
+            
+            with st.spinner(f"Creating {asset_type} design..."):
+                image_url = generate_image(prompt, st.session_state.gemini_api_key)
+                
+                if image_url:
+                    image_bytes = download_image(image_url)
+                    if image_bytes:
+                        key = f"{asset_type}_{idx}"
+                        st.session_state.asset_designs[key] = {
+                            'type': asset_type,
+                            'description': asset_desc,
+                            'url': image_url,
+                            'bytes': image_bytes
+                        }
+                    time.sleep(1)  # Rate limiting
+            
+            progress_bar.progress((idx + 1) / len(all_assets))
+        
+        status_text.text("✅ Asset designs complete!")
+        st.success(f"Created {len(st.session_state.asset_designs)} asset designs!")
+    
+    # Display asset designs
+    if st.session_state.asset_designs:
+        st.subheader("Asset Design Gallery")
+        st.caption("Turnaround sheets showing multiple views for consistent reference")
+        
+        # Display in 2 columns since turnaround sheets are wider
+        cols = st.columns(2)
+        for idx, (key, asset) in enumerate(st.session_state.asset_designs.items()):
+            with cols[idx % 2]:
+                asset_type_display = asset['type'].title()
+                if asset['type'] in ['character', 'artifact']:
+                    caption = f"{asset_type_display} Turnaround: {asset['description'][:40]}..."
+                else:
+                    caption = f"{asset_type_display}: {asset['description'][:40]}..."
+                st.image(asset['bytes'], caption=caption, use_column_width=True)
+
+
+def render_phase4_final_composition():
+    """Phase 4: Final Composition - Refine drafts with asset details."""
+    st.header("✨ Phase 4: Final Scene Rendering")
+    
+    st.info(
+        "✨ **About Final Rendering:** This phase uses COLOR IDENTIFICATION to transform your sketches. "
+        "The AI identifies each colored stick figure/object in the draft sketch and replaces it with "
+        "the matching detailed asset from Phase 3. For example: a BRIGHT RED stick figure becomes the "
+        "full character design for that character, a BRIGHT BLUE object becomes the detailed artifact. "
+        "The composition and poses are preserved, but stick figures become beautiful illustrations."
+    )
+    
+    if not st.session_state.api_token:
+        st.error("⚠️ REPLICATE_API_TOKEN not found! Please set it in your .envrc file and restart the app.")
+        st.info("💡 Run: `source .envrc` or use `./run.sh` to load environment variables.")
+        return
+    
+    if not st.session_state.draft_images:
+        st.warning("⚠️ Please generate draft sketches first (Phase 2).")
+        return
+    
+    if not st.session_state.asset_designs:
+        st.warning("⚠️ Please design assets first (Phase 3) to use as references.")
+        return
+    
+    if st.button("🎬 Render Final Scenes", type="primary"):
+        st.session_state.final_images = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, draft in enumerate(st.session_state.draft_images):
+            scene_idx = draft['scene_idx']
+            scene_text = st.session_state.scenes[scene_idx]
+            draft_sketch_url = draft['url']
+            
+            status_text.text(f"Collecting assets for scene {idx + 1}...")
+            
+            # Collect all asset images with their identifying labels AND colors
+            # Assets are stored with sequential indices across all types
+            asset_references = []
+            asset_labels = []
+            color_mappings = []  # Maps color to asset name
+            asset_idx = 0  # Global index counter matching Phase 3 storage
+            
+            # Add character assets with color mappings
+            for char_idx, char_desc in enumerate(st.session_state.characters):
+                if char_desc.strip():
+                    key = f"character_{asset_idx}"
+                    if key in st.session_state.asset_designs:
+                        asset_url = st.session_state.asset_designs[key]['url']
+                        asset_references.append(asset_url)
+                        # Extract character name (before colon)
+                        char_name = char_desc.split(':')[0].strip()
+                        asset_labels.append(f"CHARACTER: {char_name}")
+                        
+                        # Add color mapping
+                        if char_idx in st.session_state.character_colors:
+                            color = st.session_state.character_colors[char_idx]
+                            color_mappings.append(f"{color} figure → {char_name} CHARACTER asset")
+                    asset_idx += 1
+            
+            # Add artifact assets with color mappings
+            for art_idx, art_desc in enumerate(st.session_state.artifacts):
+                if art_desc.strip():
+                    key = f"artifact_{asset_idx}"
+                    if key in st.session_state.asset_designs:
+                        asset_url = st.session_state.asset_designs[key]['url']
+                        asset_references.append(asset_url)
+                        # Extract artifact name (before colon)
+                        art_name = art_desc.split(':')[0].strip()
+                        asset_labels.append(f"ARTIFACT: {art_name}")
+                        
+                        # Add color mapping
+                        if art_idx in st.session_state.artifact_colors:
+                            color = st.session_state.artifact_colors[art_idx]
+                            color_mappings.append(f"{color} object → {art_name} ARTIFACT asset")
+                    asset_idx += 1
+            
+            # Add environment asset
+            for env_desc in st.session_state.environments:
+                if env_desc.strip():
+                    key = f"environment_{asset_idx}"
+                    if key in st.session_state.asset_designs:
+                        asset_url = st.session_state.asset_designs[key]['url']
+                        asset_references.append(asset_url)
+                        # Extract environment name
+                        env_name = env_desc.split(':')[0].strip() if ':' in env_desc else env_desc[:30]
+                        asset_labels.append(f"ENVIRONMENT: {env_name}")
+                    asset_idx += 1
+            
+            status_text.text(f"Rendering final scene {idx + 1}/{len(st.session_state.draft_images)}...")
+            
+            # Build refinement prompt that uses the assets with color mappings
+            asset_list = "\\n".join(asset_labels) if asset_labels else "No specific assets"
+            color_map_text = "\\n".join(color_mappings) if color_mappings else "No color mappings"
+            
+            refinement_prompt = (
+                f"Transform this COLOR-CODED stick figure sketch into a beautiful, detailed, full-color children's storybook illustration.\\n\\n"
+                f"SCENE: {scene_text}\\n\\n"
+                f"COLOR-TO-ASSET MAPPING (use this to identify which sketch element matches which asset):\\n{color_map_text}\\n\\n"
+                f"AVAILABLE ASSETS TO USE:\\n{asset_list}\\n\\n"
+                f"INSTRUCTIONS:\\n"
+                f"1. The sketch uses SOLID COLORS to identify different characters and objects\\n"
+                f"2. Use the color mapping above to match each colored element to its corresponding asset\\n"
+                f"3. Replace each colored stick figure/object with the detailed asset that matches its color\\n"
+                f"4. Keep the exact same composition, layout, and positions as the sketch\\n"
+                f"5. Maintain character poses and gestures from the sketch\\n"
+                f"6. The colored sketch shows WHAT goes WHERE - the assets show HOW they should look\\n"
+                f"7. Create a fully rendered, professional children's book illustration\\n"
+                f"8. Use warm colors, soft lighting, clean style suitable for ages 5-10\\n"
+                f"9. Add an appropriate background matching the environment asset provided\\n\\n"
+                f"CRITICAL: Match colors EXACTLY - BRIGHT RED figure → use the asset labeled as BRIGHT RED!"
+            )
+            
+            with st.spinner(f"Creating scene {idx + 1}..."):
+                # Use edit_image with draft sketch as base and all assets as references
+                image_url = edit_image(
+                    draft_sketch_url, 
+                    refinement_prompt, 
+                    st.session_state.api_token,
+                    reference_images=asset_references if asset_references else None
+                )
+                
+                if image_url:
+                    image_bytes = download_image(image_url)
+                    if image_bytes:
+                        st.session_state.final_images.append({
+                            'url': image_url,
+                            'bytes': image_bytes,
+                            'scene_idx': scene_idx
+                        })
+                    time.sleep(1)  # Rate limiting
+            
+            progress_bar.progress((idx + 1) / len(st.session_state.draft_images))
+        
+        status_text.text("✅ Final rendering complete!")
+        st.success(f"Rendered {len(st.session_state.final_images)} final scenes!")
+    
+    # Display final images
+    if st.session_state.final_images:
+        st.subheader("Final Scenes Preview")
+        
+        cols = st.columns(2)
+        for idx, final in enumerate(st.session_state.final_images):
+            with cols[idx % 2]:
+                st.image(final['bytes'], caption=f"Final Scene {final['scene_idx'] + 1}", 
+                        use_column_width=True)
+
+
+def render_phase5_pdf_compilation():
+    """Phase 5: PDF Compilation - Create downloadable storybook."""
+    st.header("📚 Phase 5: PDF Storybook")
+    
+    if not st.session_state.final_images:
+        st.warning("⚠️ Please render final scenes first (Phase 4).")
         return
     
     if not st.session_state.story_title:
         st.warning("⚠️ Please enter a story title in Phase 1.")
         return
     
-    st.info(f"Ready to compile {len(st.session_state.scene_images)} scenes into a PDF storybook.")
+    st.info(f"Ready to compile {len(st.session_state.final_images)} scenes into a PDF storybook.")
     
     if st.button("📖 Generate PDF Storybook", type="primary"):
         with st.spinner("Compiling PDF... This may take a moment..."):
             try:
                 # Extract scene texts and image bytes in order
-                pdf_scenes = []
-                pdf_image_bytes = []
+                final_scenes = []
+                final_image_bytes = []
                 
-                for scene_data in st.session_state.scene_images:
-                    scene_idx = scene_data['scene_idx']
-                    pdf_scenes.append(st.session_state.scenes[scene_idx])
-                    pdf_image_bytes.append(scene_data['bytes'])
+                for final_img in st.session_state.final_images:
+                    scene_idx = final_img['scene_idx']
+                    final_scenes.append(st.session_state.scenes[scene_idx])
+                    final_image_bytes.append(final_img['bytes'])
                 
                 # Create PDF
                 pdf_bytes = create_pdf(
                     st.session_state.story_title,
-                    pdf_scenes,
-                    pdf_image_bytes
+                    final_scenes,
+                    final_image_bytes
                 )
+                
+                # Encode for download
+                b64_pdf = base64.b64encode(pdf_bytes).decode()
                 
                 # Success message
                 st.success("✅ PDF generated successfully!")
@@ -1051,25 +1154,28 @@ def main():
     # Initialize session state
     initialize_session_state()
     
-    # Sidebar - API Status
+    # Sidebar - API Status (without showing the actual token)
     with st.sidebar:
         st.subheader("🔧 Configuration Status")
-        if st.session_state.gemini_api_key:
-            st.success("✅ Gemini API Key Loaded")
+        if st.session_state.api_token:
+            st.success("✅ API Token Loaded")
+            st.caption("Token loaded from environment")
         else:
-            st.error("❌ Gemini API Key Missing")
-            st.code("export GEMINI_API_KEY='your-key'", language="bash")
+            st.error("❌ API Token Missing")
+            st.caption("Set REPLICATE_API_TOKEN in .envrc")
+            st.code("source .envrc", language="bash")
     
     # Title
     st.title("📚 AI-Powered Storybook Generator")
-    st.markdown("*Create beautiful illustrated storybooks with consistent characters using Google Imagen*")
+    st.markdown("*Create beautiful illustrated storybooks using Qwen AI Models*")
     st.markdown("---")
     
-    # Phase selection tabs - NEW WORKFLOW
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # Phase selection tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📝 Story Setup",
-        "🎭 Character Design",
-        "🎬 Scene Generation",
+        "✏️ Draft Sketches",
+        "🎨 Asset Design",
+        "✨ Final Rendering",
         "📚 PDF Export"
     ])
     
@@ -1077,17 +1183,20 @@ def main():
         render_phase1_inputs()
     
     with tab2:
-        render_phase2_character_design()
+        render_phase2_draft_generation()
     
     with tab3:
-        render_phase3_scene_generation()
+        render_phase3_asset_design()
     
     with tab4:
-        render_phase4_pdf_export()
+        render_phase4_final_composition()
+    
+    with tab5:
+        render_phase5_pdf_compilation()
     
     # Footer
     st.markdown("---")
-    st.caption("Powered by Google Imagen 4.0 & Gemini 2.5 Flash AI Models")
+    st.caption("Powered by Qwen Image & Qwen Image Edit Plus AI Models via Replicate")
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ Thumbs.db
 *.jpg
 *.jpeg
 /tmp/
+temp_images/
 
 # Logs
 *.log
